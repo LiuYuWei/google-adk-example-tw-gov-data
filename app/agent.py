@@ -4,6 +4,7 @@ from google.adk.agents import Agent
 import os
 import requests
 from typing import Dict
+import requests
 import feedparser
 from typing import Dict, List
 
@@ -126,7 +127,8 @@ def get_current_time(city: str) -> dict:
     return {"status": "success", "report": report}
 
 def chcg_search_news(keyword: str) -> Dict:
-    """從彰化縣政府 RSS 搜尋與關鍵字最相近的新聞。
+    """
+    從彰化縣政府 RSS 搜尋與關鍵字最相近的新聞。
 
     Args:
         keyword (str): 搜尋的關鍵字。
@@ -135,23 +137,47 @@ def chcg_search_news(keyword: str) -> Dict:
         dict: 包含搜尋結果的狀態與相關新聞，或錯誤訊息。
     """
     rss_url = "https://www.chcg.gov.tw/ch2/rssnews2b.aspx"
+    # 自訂 User-Agent 模擬瀏覽器請求，避免被伺服器封鎖
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/115.0.0.0 Safari/537.36"
+        )
+    }
 
     try:
-        feed = feedparser.parse(rss_url)
+        # 1. 使用 requests 取得 RSS 內容
+        resp = requests.get(rss_url, headers=headers, timeout=10)
+        # 2. 確認 HTTP 回應狀態碼
+        if resp.status_code != 200:
+            return {
+                "status": "error",
+                "error_message": f"HTTP 錯誤，狀態碼：{resp.status_code}"
+            }
+        # 3. 設定編碼並解析
+        resp.encoding = "utf-8"
+        feed = feedparser.parse(resp.text)
 
+        # 4. 檢查 XML 格式錯誤
+        if getattr(feed, "bozo", False):
+            return {
+                "status": "error",
+                "error_message": f"RSS 格式解析失敗：{feed.bozo_exception}"
+            }
+        # 5. 確認有新聞項目
         if not feed.entries:
             return {
                 "status": "error",
-                "error_message": "RSS 資料讀取失敗或目前無新聞資料。"
+                "error_message": "RSS 中找不到任何新聞項目。"
             }
 
-        # 搜尋相關新聞
+        # 6. 搜尋相關新聞
         matched_news: List[Dict] = []
         for entry in feed.entries:
-            title = entry.title
-            summary = entry.summary
-            link = entry.link
-
+            title = entry.get("title", "")
+            summary = entry.get("summary", "")
+            link = entry.get("link", "")
             if keyword.lower() in title.lower() or keyword.lower() in summary.lower():
                 matched_news.append({
                     "title": title,
@@ -159,31 +185,37 @@ def chcg_search_news(keyword: str) -> Dict:
                     "link": link
                 })
 
+        # 7. 回傳搜尋結果或空結果
         if not matched_news:
             return {
                 "status": "error",
-                "error_message": f"No relevant news found for keyword '{keyword}'."
+                "error_message": f"未找到與關鍵字「{keyword}」相關的新聞。"
             }
 
-        # 回傳最相關的前 1~3 筆新聞
-        top_news = matched_news[:3]
-        report_lines = []
-        for news in top_news:
-            report_lines.append(f"Title: {news['title']}\nSummary: {news['summary']}\nLink: {news['link']}\n")
-
-        report = "\n".join(report_lines)
-
+        # 8. 組成前 3 筆新聞報表
+        report_lines = [
+            f"Title: {news['title']}\n"
+            f"Summary: {news['summary']}\n"
+            f"Link: {news['link']}\n"
+            for news in matched_news[:3]
+        ]
         return {
             "status": "success",
-            "report": report
+            "report": "\n".join(report_lines)
         }
 
-    except Exception as e:
+    except requests.RequestException as re:
+        # 網路或 HTTP 相關錯誤
         return {
             "status": "error",
-            "error_message": f"RSS 解析錯誤: {str(e)}"
+            "error_message": f"網路請求異常：{str(re)}"
         }
-
+    except Exception as e:
+        # 其他意外錯誤
+        return {
+            "status": "error",
+            "error_message": f"RSS 解析異常：{str(e)}"
+        }
 
 root_agent = Agent(
     name="weather_time_news_agent",
